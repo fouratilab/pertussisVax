@@ -1,0 +1,408 @@
+---
+title: "Pertusis challenge 1.2"
+author: "Slim Fourati"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r load-packages}
+suppressPackageStartupMessages(library(package = "knitr"))
+suppressPackageStartupMessages(library(package = "glmnet"))
+suppressPackageStartupMessages(library(package = "edgeR"))
+suppressPackageStartupMessages(library(package = "biomaRt"))
+suppressPackageStartupMessages(library(package = "GSVA"))
+suppressPackageStartupMessages(library(package = "agua"))
+suppressPackageStartupMessages(library(package = "tidyverse"))
+```
+
+```{r session-options, warning=FALSE}
+workDir <- "/Users/iew5629/Desktop/Projects/20231013_Pertussis/Workspace"
+options(readr.show_col_types = FALSE)
+agua::h2o_start()
+```
+
+```{r read-input-2020}
+# 2020
+pts2020DF <- read_tsv(file           = file.path(workDir, "documents/2020LD_subject.tsv"))
+sample2020DF <- read_tsv(file           = file.path(workDir, "documents/2020LD_specimen.tsv"))
+ab2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_plasma_ab_titer.tsv"))
+fcm2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_pbmc_cell_frequency.tsv"))
+olink2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_plasma_cytokine_concentration.tsv"))
+ge2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_pbmc_gene_expression.tsv"))         
+```
+
+```{r read-input-2021}
+# 2021
+pts2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_subject.tsv"))
+sample2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_specimen.tsv"))
+ab2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_plasma_ab_titer.tsv"))
+fcm2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_pbmc_cell_frequency.tsv"))
+olink2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_plasma_cytokine_concentration.tsv"))
+ge2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_pbmc_gene_expression.tsv"))         
+```
+
+```{r read-input-2022}
+# 2021
+pts2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_subject.tsv"))
+sample2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_specimen.tsv"))
+ab2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_plasma_ab_titer.tsv"))
+```
+
+# Challenge1.2
+```{r challenge1.2-outcome}
+yDF <- ab2020DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0)
+```
+
+# pts info
+```{r pts-2020, eval=FALSE}
+xDF <- pts2020DF %>%
+  dplyr::select(-dataset) %>%
+  column_to_rownames(var = "subject_id") %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.Date, as.factor) %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+xDF <- sapply(xDF, as.numeric) %>% 
+  scale() %>%
+  as.matrix()
+fit <- cv.glmnet(x = xDF, 
+                 y = rank(yDF$MFI_FC),
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+```
+
+# BL ab
+```{r ab-bl-2020}
+xDF <- ab2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0 &
+           grepl(pattern = "IgG", isotype)) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+x2DF <- ab2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") 
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = rank(-yDF$MFI_FC),
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+yobs <- ab2021DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0) %>%
+  slice(match(rownames(x2DF), table = .$subject_id))
+
+plot(yhat[, "s1"], rank(-1 * yobs$MFI_FC))
+cor.test(yhat[, "s1"], rank(-1 * yobs$MFI_FC))
+```
+
+```{r agua}
+set.seed(seed= 3)
+trainDF <- xDF %>%
+  as.data.frame() %>%
+  mutate(MFI_FC = yDF$MFI_FC)
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(MFI_FC ~ ., data = trainDF)
+
+plot(predict(auto_fit, trainDF)$.pred, 
+     yDF$MFI_FC)
+
+
+plot(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     yobs$MFI_FC)
+
+cor.test(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     yobs$MFI_FC)
+
+cor.test(rank(-1 * predict(auto_fit, new_data = as.data.frame(x2DF))$.pred), 
+     rank(-1 * yobs$MFI_FC))
+```
+
+# FCM
+```{r fcm-bl-2020, eval=FALSE}
+xDF <- fcm2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+xDF[is.na(xDF)] <- 0
+
+x2DF <- fcm2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id")
+x2DF[is.na(x2DF)] <- 0
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = rank(-yDF[match(rownames(xDF), table = yDF$subject_id), "MFI_FC"]),
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+yobs <- ab2021DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0) %>%
+  slice(match(rownames(x2DF), table = .$subject_id))
+
+plot(yhat[as.character(yobs$subject_id), "s1"], rank(-1 * yobs$MFI_FC))
+cor.test(yhat[as.character(yobs$subject_id), "s1"], rank(-1 * yobs$MFI_FC))
+```
+
+# Olink
+```{r olink-bl-2020, eval=FALSE}
+xDF <- olink2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, protein_id, protein_expression) %>%
+  pivot_wider(names_from = protein_id, values_from = protein_expression) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+x2DF <- olink2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, protein_id, protein_expression) %>%
+  pivot_wider(names_from = protein_id, values_from = protein_expression) %>%
+  column_to_rownames(var = "subject_id")
+x2DF[is.na(x2DF)] <- 0
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = rank(-yDF[match(rownames(xDF), table = yDF$subject_id), "MFI_FC"]),
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+yobs <- ab2021DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0) %>%
+  slice(match(rownames(x2DF), table = .$subject_id))
+
+plot(yhat[as.character(yobs$subject_id), "s1"], rank(-1 * yobs$MFI_FC))
+cor.test(yhat[as.character(yobs$subject_id), "s1"], rank(-1 * yobs$MFI_FC))
+```
+
+# GE
+```{r ge-bl-2020, eval=FALSE}
+# extract d0 GE
+d0RawMat <- ge2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(ensembl_gene_id = gsub(pattern = "\\.[0-9]+$", replacement = "", versioned_ensembl_gene_id)) %>%
+  dplyr::select(subject_id, ensembl_gene_id, raw_count) %>%
+  pivot_wider(names_from = subject_id, values_from = raw_count) %>%
+  column_to_rownames(var = "ensembl_gene_id")
+
+# TMM normalization
+dge <- DGEList(counts       = d0RawMat,
+               remove.zeros = TRUE)
+dge <- calcNormFactors(object = dge, method = "TMM")
+normalizedCounts <- cpm(dge, normalized.lib.sizes = TRUE, log = TRUE)
+
+# convert ensembl_gene_id to gene_symbol
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+id2symbol <- getBM(attributes  = c("ensembl_gene_id", "hgnc_symbol"),
+                   filters     = "ensembl_gene_id",
+                   values      = rownames(normalizedCounts),
+                   mart        = human)
+geneD0Mat <- normalizedCounts %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "ensembl_gene_id") %>%
+  merge(y = id2symbol, by = "ensembl_gene_id") %>%
+  select(-ensembl_gene_id) %>%
+  slice(order(apply(select(., -hgnc_symbol), MARGIN = 1, FUN = var), decreasing = TRUE)) %>%
+  filter(!duplicated(hgnc_symbol) & hgnc_symbol != "") %>%
+  column_to_rownames(var = "hgnc_symbol") %>%
+  as.matrix()
+  
+# GSVA with BTM
+load(file = "/Users/iew5629/Desktop/Projects/20231013_Pertussis/Workspace/documents/GeneSets.rda")
+BTM.geneSets <- BTM.geneSets[!grepl(pattern = "TBA", names(BTM.geneSets))]
+
+flag <- BTM.geneSets %>%
+  stack() %>%
+  filter(values %in% rownames(geneD0Mat)) %>%
+  group_by(ind) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  filter(n >= 15)
+
+gsD0Mat <- gsva(expr = geneD0Mat, gset.idx.list = BTM.geneSets[flag$ind], verbose = FALSE) 
+
+# prediction
+xDF <- t(gsD0Mat)
+
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = rank(-yDF[match(rownames(xDF), table = yDF$subject_id), "MFI_FC"]),
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+```
+
+# 2022 test set
+```{r 2022-test-set}
+set.seed(seed= 3)
+# train on 2020 and 2021 baseline ab only
+yDF <- ab2020DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0)
+
+xDF <- ab2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0 &
+           grepl(pattern = "IgG", isotype)) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+x2DF <- ab2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") 
+
+yobs <- ab2021DF %>% 
+  filter(isotype %in% "IgG" & antigen %in% "PT") %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% c(0, 14)) %>%
+  select(subject_id, planned_day_relative_to_boost, MFI_normalised) %>%
+  pivot_wider(names_from = planned_day_relative_to_boost, values_from = MFI_normalised, names_prefix = "MFI_") %>%
+  mutate(MFI_FC = MFI_14/MFI_0) %>%
+  slice(match(rownames(x2DF), table = .$subject_id))
+
+x3DF <- ab2022DF %>%
+  merge(y = sample2022DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2022DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") 
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+x3DF <- x3DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+x3DF <- scale(x3DF)
+
+trainDF <- rbind(xDF, x2DF) %>%
+  as.data.frame() %>%
+  mutate(MFI_FC = c(yDF$MFI_FC, yobs$MFI_FC))
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(MFI_FC ~ ., data = trainDF)
+
+yhat <- predict(auto_fit, new_data = x3DF)$.pred 
+rhat <- rank(-1 * yhat)
+print(cbind(rownames(x3DF), rhat))
+```

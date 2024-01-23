@@ -1,0 +1,501 @@
+---
+title: "Pertusis challenge 2.1"
+author: "Slim Fourati"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r load-packages}
+suppressPackageStartupMessages(library(package = "knitr"))
+suppressPackageStartupMessages(library(package = "glmnet"))
+suppressPackageStartupMessages(library(package = "edgeR"))
+suppressPackageStartupMessages(library(package = "biomaRt"))
+suppressPackageStartupMessages(library(package = "GSVA"))
+suppressPackageStartupMessages(library(package = "agua"))
+suppressPackageStartupMessages(library(package = "tidyverse"))
+```
+
+```{r session-options, warning=FALSE}
+workDir <- "/Users/iew5629/Desktop/Projects/20231013_Pertussis/Workspace"
+options(readr.show_col_types = FALSE)
+agua::h2o_start()
+```
+
+```{r read-input-2020}
+# 2020
+pts2020DF <- read_tsv(file           = file.path(workDir, "documents/2020LD_subject.tsv"))
+sample2020DF <- read_tsv(file           = file.path(workDir, "documents/2020LD_specimen.tsv"))
+fcm2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_pbmc_cell_frequency.tsv"))
+ab2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_plasma_ab_titer.tsv"))
+olink2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_plasma_cytokine_concentration.tsv"))
+ge2020DF <- read_tsv(file = file.path(workDir, "documents/2020LD_pbmc_gene_expression.tsv"))         
+```
+
+```{r read-input-2021}
+# 2021
+pts2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_subject.tsv"))
+sample2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_specimen.tsv"))
+fcm2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_pbmc_cell_frequency.tsv"))
+ab2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_plasma_ab_titer.tsv"))
+olink2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_plasma_cytokine_concentration.tsv"))
+ge2021DF <- read_tsv(file = file.path(workDir, "documents/2021LD_pbmc_gene_expression.tsv"))         
+```
+
+```{r read-input-2022}
+# 2022
+pts2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_subject.tsv"))
+sample2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_specimen.tsv"))
+fcm2022DF <- read_tsv(file = file.path(workDir, "documents/2022BD_pbmc_cell_frequency.tsv"))
+```
+
+# Challenge2.1
+```{r challenge2.1-outcome}
+yDF <- fcm2020DF %>% 
+  filter(cell_type_name %in% "Monocytes") %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 1) %>%
+  select(subject_id, percent_live_cell)
+y2DF <- fcm2021DF %>% 
+  filter(cell_type_name %in% "Monocytes") %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 1) %>%
+  select(subject_id, percent_live_cell)
+```
+
+# pts info
+```{r pts-2020, eval=FALSE}
+xDF <- pts2020DF %>%
+  dplyr::select(-dataset) %>%
+  column_to_rownames(var = "subject_id") %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.Date, as.factor) %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+xDF <- sapply(xDF, as.numeric) %>% 
+  scale() %>%
+  as.matrix()
+fit <- cv.glmnet(x = xDF, 
+                 y = yDF$percent_live_cell,
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+x2DF <- pts2021DF %>%
+  dplyr::select(-dataset) %>%
+  column_to_rownames(var = "subject_id") %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.Date, as.factor) %>%
+  slice(match(y2DF$subject_id, table = rownames(.)))
+
+x2DF <- sapply(x2DF, as.numeric) %>% 
+  scale() %>%
+  as.matrix()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+plot(rank(-1 * yhat), rank(-1 * y2DF$percent_live_cell))
+cor.test(rank(-1 * yhat), rank(-1 * y2DF$percent_live_cell))
+```
+
+# BL ab
+```{r ab-bl-2020, eval=FALSE}
+xDF <- ab2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0 &
+           grepl(pattern = "IgG", isotype)) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+x2DF <- ab2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(cname = paste0(isotype, "_", antigen),
+         cname = make.names(cname)) %>%
+  dplyr::select(subject_id, cname, MFI_normalised) %>%
+  distinct() %>%
+  pivot_wider(names_from = cname, values_from = MFI_normalised) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(y2DF$subject_id, table = rownames(.)))
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = yDF$percent_live_cell,
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+plot(yhat[, "s1"], y2DF$percent_live_cell)
+cor.test(yhat[, "s1"], y2DF$percent_live_cell)
+```
+
+# FCM
+```{r fcm-bl-2020, eval=TRUE}
+xDF <- fcm2020DF %>%
+  mutate(cell_type_name = make.names(cell_type_name)) %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+xDF[is.na(xDF)] <- 0
+
+x2DF <- fcm2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(y2DF$subject_id, table = rownames(.))) %>%
+  setNames(nm = make.names(names(.))) %>%
+  setNames(nm = make.unique(names(.)))
+x2DF[is.na(x2DF)] <- 0
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = yDF$percent_live_cell,
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+plot(yhat[, "s1"], y2DF$percent_live_cell)
+cor.test(yhat[, "s1"], y2DF$percent_live_cell)
+
+plot(rank(-1 * yhat[, "s1"]), rank(-1 * y2DF$percent_live_cell))
+cor.test(rank(-1 * yhat[, "s1"]), rank(-1 * y2DF$percent_live_cell))
+```
+
+```{r agua-fcm}
+set.seed(seed= 3)
+trainDF <- xDF %>%
+  as.data.frame() %>%
+  mutate(percent_live_cell = yDF$percent_live_cell)
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(percent_live_cell ~ ., data = trainDF)
+
+plot(predict(auto_fit, new_data = as.data.frame(xDF))$.pred, 
+     yDF$percent_live_cell)
+
+
+plot(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF$percent_live_cell)
+
+cor.test(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF$percent_live_cell)
+
+cor.test(rank(-1 * predict(auto_fit, new_data = as.data.frame(x2DF))$.pred), 
+     rank(-1 * y2DF$percent_live_cell))
+```
+
+# Olink
+```{r olink-bl-2020, eval=FALSE}
+xDF <- olink2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, protein_id, protein_expression) %>%
+  pivot_wider(names_from = protein_id, values_from = protein_expression) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+
+x2DF <- olink2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, protein_id, protein_expression) %>%
+  pivot_wider(names_from = protein_id, values_from = protein_expression) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(y2DF$subject_id, table = rownames(.)))
+x2DF[is.na(x2DF)] <- 0
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"],
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+plot(yhat[, "s1"], y2DF$percent_live_cell)
+cor.test(yhat[, "s1"], y2DF$percent_live_cell)
+
+plot(rank(-1 *yhat[, "s1"]), rank(-1 * y2DF$percent_live_cell))
+cor.test(rank(-1* yhat[, "s1"]), rank(-1* y2DF$percent_live_cell))
+```
+
+```{r agua-olink, eval=FALSE}
+set.seed(seed= 3)
+trainDF <- xDF %>%
+  as.data.frame() %>%
+  mutate(percent_live_cell = yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"])
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(percent_live_cell ~ ., data = trainDF)
+
+plot(predict(auto_fit, new_data = as.data.frame(xDF))$.pred, 
+     yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"])
+
+
+plot(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF$percent_live_cell)
+
+cor.test(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF$percent_live_cell)
+
+cor.test(rank(-1 * predict(auto_fit, new_data = as.data.frame(x2DF))$.pred), 
+     rank(-1 * y2DF$percent_live_cell))
+```
+
+# GE
+```{r ge-bl-2020, eval=FALSE}
+# extract d0 GE
+d0RawMat <- ge2020DF %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(ensembl_gene_id = gsub(pattern = "\\.[0-9]+$", replacement = "", versioned_ensembl_gene_id)) %>%
+  dplyr::select(subject_id, ensembl_gene_id, raw_count) %>%
+  pivot_wider(names_from = subject_id, values_from = raw_count) %>%
+  column_to_rownames(var = "ensembl_gene_id")
+
+# TMM normalization
+dge <- DGEList(counts       = d0RawMat,
+               remove.zeros = TRUE)
+dge <- calcNormFactors(object = dge, method = "TMM")
+normalizedCounts <- cpm(dge, normalized.lib.sizes = TRUE, log = TRUE)
+
+# convert ensembl_gene_id to gene_symbol
+human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+id2symbol <- getBM(attributes  = c("ensembl_gene_id", "hgnc_symbol"),
+                   filters     = "ensembl_gene_id",
+                   values      = rownames(normalizedCounts),
+                   mart        = human)
+geneD0Mat <- normalizedCounts %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "ensembl_gene_id") %>%
+  merge(y = id2symbol, by = "ensembl_gene_id") %>%
+  select(-ensembl_gene_id) %>%
+  slice(order(apply(select(., -hgnc_symbol), MARGIN = 1, FUN = var), decreasing = TRUE)) %>%
+  filter(!duplicated(hgnc_symbol) & hgnc_symbol != "") %>%
+  column_to_rownames(var = "hgnc_symbol") %>%
+  as.matrix()
+  
+# GSVA with BTM
+load(file = "/Users/iew5629/Desktop/Projects/20231013_Pertussis/Workspace/documents/GeneSets.rda")
+BTM.geneSets <- BTM.geneSets[!grepl(pattern = "TBA", names(BTM.geneSets))]
+names(BTM.geneSets) <- make.names(names(BTM.geneSets))
+
+flag <- BTM.geneSets %>%
+  stack() %>%
+  filter(values %in% rownames(geneD0Mat)) %>%
+  group_by(ind) %>%
+  summarize(n = n()) %>%
+  arrange(desc(n)) %>%
+  filter(n >= 15)
+
+gsD0Mat <- gsva(expr = geneD0Mat, gset.idx.list = BTM.geneSets[flag$ind], verbose = FALSE) 
+
+# prediction
+xDF <- t(gsD0Mat)
+xDF <- xDF[intersect(yDF$subject_id, rownames(xDF)), ]
+fit <- cv.glmnet(x = as.matrix(xDF), 
+                 y = yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"],
+                 nfolds = nrow(xDF),
+                 grouped = FALSE)
+plot(fit)
+coef(fit, s = fit$lambda.min) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(s1 != 0) %>%
+  kable()
+
+# extract d0 GE of 2021
+d0RawMat <- ge2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  mutate(ensembl_gene_id = gsub(pattern = "\\.[0-9]+$", replacement = "", versioned_ensembl_gene_id)) %>%
+  dplyr::select(subject_id, ensembl_gene_id, raw_count) %>%
+  pivot_wider(names_from = subject_id, values_from = raw_count) %>%
+  column_to_rownames(var = "ensembl_gene_id")
+
+# TMM normalization
+dge <- DGEList(counts       = d0RawMat,
+               remove.zeros = TRUE)
+dge <- calcNormFactors(object = dge, method = "TMM")
+normalizedCounts <- cpm(dge, normalized.lib.sizes = TRUE, log = TRUE)
+
+# convert ensembl_gene_id to gene_symbol
+id2symbol <- getBM(attributes  = c("ensembl_gene_id", "hgnc_symbol"),
+                   filters     = "ensembl_gene_id",
+                   values      = rownames(normalizedCounts),
+                   mart        = human)
+geneD0Mat <- normalizedCounts %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "ensembl_gene_id") %>%
+  merge(y = id2symbol, by = "ensembl_gene_id") %>%
+  select(-ensembl_gene_id) %>%
+  slice(order(apply(select(., -hgnc_symbol), MARGIN = 1, FUN = var), decreasing = TRUE)) %>%
+  filter(!duplicated(hgnc_symbol) & hgnc_symbol != "") %>%
+  column_to_rownames(var = "hgnc_symbol") %>%
+  as.matrix()
+  
+# GSVA with BTM
+gsD0Mat <- gsva(expr = geneD0Mat, gset.idx.list = BTM.geneSets[flag$ind], verbose = FALSE) 
+
+# prediction
+x2DF <- t(gsD0Mat)
+yhat <- predict(fit, newx = as.matrix(x2DF), s = fit$lambda.min, type = "response")
+
+plot(yhat[as.character(y2DF$subject_id), "s1"], y2DF$percent_live_cell)
+cor.test(yhat[as.character(y2DF$subject_id), "s1"], y2DF$percent_live_cel)
+
+plot(rank(-1 * yhat[as.character(y2DF$subject_id), "s1"]), rank(-1 * y2DF$percent_live_cell))
+cor.test(rank(-1 * yhat[as.character(y2DF$subject_id), "s1"]), rank(-1 * y2DF$percent_live_cell))
+```
+
+```{r agua-ge, eval=FALSE}
+set.seed(seed= 3)
+trainDF <- xDF %>%
+  as.data.frame() %>%
+  mutate(percent_live_cell = yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"])
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(percent_live_cell ~ ., data = trainDF)
+
+plot(predict(auto_fit, new_data = as.data.frame(xDF))$.pred, 
+     yDF[match(rownames(xDF), table = yDF$subject_id), "percent_live_cell"])
+
+
+plot(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF[match(rownames(x2DF), table = y2DF$subject_id), "percent_live_cell"])
+
+cor.test(predict(auto_fit, new_data = as.data.frame(x2DF))$.pred, 
+     y2DF[match(rownames(x2DF), table = y2DF$subject_id), "percent_live_cell"])
+
+cor.test(rank(-1 * predict(auto_fit, new_data = as.data.frame(x2DF))$.pred), 
+     rank(-1 * y2DF[match(rownames(x2DF), table = y2DF$subject_id), "percent_live_cell"]))
+```
+
+# 2022 test set
+```{r 2022-test-set, eval=TRUE}
+set.seed(seed= 3)
+# train on 2020 and 2021 baseline ab only
+xDF <- fcm2020DF %>%
+  mutate(cell_type_name = make.names(cell_type_name)) %>%
+  merge(y = sample2020DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2020DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(yDF$subject_id, table = rownames(.)))
+xDF[is.na(xDF)] <- 0
+
+x2DF <- fcm2021DF %>%
+  merge(y = sample2021DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2021DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  slice(match(y2DF$subject_id, table = rownames(.))) %>%
+  setNames(nm = make.names(names(.))) %>%
+  setNames(nm = make.unique(names(.)))
+x2DF[is.na(x2DF)] <- 0
+
+x3DF <- fcm2022DF %>%
+  merge(y = sample2022DF, by = "specimen_id", all.x = TRUE) %>%
+  merge(y = pts2022DF, by = "subject_id", all.x = TRUE) %>%
+  filter(planned_day_relative_to_boost %in% 0) %>%
+  dplyr::select(subject_id, cell_type_name, percent_live_cell) %>%
+  pivot_wider(names_from = cell_type_name, values_from = percent_live_cell) %>%
+  column_to_rownames(var = "subject_id") %>%
+  setNames(nm = make.names(names(.))) %>%
+  setNames(nm = make.unique(names(.)))
+
+xDF <- xDF[, intersect(colnames(xDF), colnames(x2DF))]
+x2DF <- x2DF[, colnames(xDF)]
+x3DF <- x3DF[, colnames(xDF)]
+
+xDF <- scale(xDF)
+x2DF <- scale(x2DF)
+x3DF <- scale(x3DF)
+
+trainDF <- rbind(xDF, x2DF) %>%
+  as.data.frame() %>%
+  mutate(percent_live_cell = c(yDF$percent_live_cell, y2DF$percent_live_cell))
+
+auto_fit <- auto_ml() %>%
+     set_engine("h2o", max_runtime_secs = 5) %>%
+     set_mode("regression") %>%
+     fit(percent_live_cell ~ ., data = trainDF)
+
+yhat <- predict(auto_fit, new_data = x3DF)$.pred 
+rhat <- rank(-1 * yhat)
+print(cbind(rownames(x3DF), rhat))
+```
+
+```{r session-info}
+agua::h2o_end()
+sessionInfo()
+```
